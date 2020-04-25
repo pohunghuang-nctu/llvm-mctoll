@@ -38,7 +38,7 @@ void MCInstRaiser::buildCFG(MachineFunction &MF, const MCInstrAnalysis *MIA,
     MCInstOrData mcInstorData = mcInstorDataIter->second;
     if (PrintAll)
       mcInstorData.dump();
-
+    
     // If the current mcInst is a target of some instruction,
     // i) record the target of previous instruction and fall-through as
     //    needed.
@@ -115,8 +115,11 @@ void MCInstRaiser::buildCFG(MachineFunction &MF, const MCInstrAnalysis *MIA,
     }
     if (mcInstorData.isMCInst()) {
       // Add raised MachineInstr to current MBB.
-      MF.back().push_back(
-          RaiseMCInst(*MII, MF, mcInstorData.getMCInst(), mcInstIndex));
+      //outs() << "before construct RaiseMCInst\n";
+      auto mcinst = RaiseMCInst(*MII, MF, mcInstorData.getMCInst(), mcInstIndex);
+      //outs() << "after construct RaiseMCInst\n";
+      MF.back().push_back(mcinst);
+      //outs() << "after pushback\n";
     }
   }
 
@@ -176,6 +179,7 @@ MachineInstr *MCInstRaiser::RaiseMCInst(const MCInstrInfo &mcInstrInfo,
   // Construct MachineInstr that is the raised abstraction of MCInstr
   const MCInstrDesc &mcInstrDesc = mcInstrInfo.get(mcInst.getOpcode());
   DebugLoc *debugLoc = new DebugLoc();
+
   MachineInstrBuilder builder =
       BuildMI(machineFunction, *debugLoc, mcInstrDesc);
 

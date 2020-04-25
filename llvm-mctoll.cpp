@@ -1790,8 +1790,12 @@ static void DumpInput(StringRef file) {
         errs() << "Raising x64 relocatable (.o) x64 binaries not supported\n";
         exit(1);
       }
-    } else if (o->getArch() == Triple::arm)
+    } else if (o->getArch() == Triple::arm) {
       DumpObject(o);
+    } else if (o->getArch() == Triple::aarch64) {
+        // added by Paul 20200316 for aarch64
+      DumpObject(o);
+    }
     else {
       errs() << "No support to raise Binaries other than x64 and ARM\n";
       exit(1);

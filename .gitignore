@@ -1,3 +1,9 @@
 build
 *.swp
 *~
+CMakeCache.txt
+CMakeFiles/*
+Makefile
+cmake_install.cmake
+nbproject/*
+ABRch64/*
