@@ -48,51 +48,98 @@ bool AArch64FunctionPrototype::isUsedRegiser(unsigned reg,
 
   return false;
 }
-
+/// calculate framesize by reading first sub command in 1st block. 
+void AArch64FunctionPrototype::calculateFrameSize() {
+  const MachineBasicBlock &mbb = MF->front();
+  for (MachineBasicBlock::const_iterator mii = mbb.begin(), mie = mbb.end();
+         mii != mie; ++mii) { 
+    const MachineInstr &mi = *mii;
+    // sub sp, sp, 0x50
+    if (mi.getOpcode() == AArch64::SUBXri && mi.getOperand(0).isReg() &&
+        mi.getOperand(1).isReg() && mi.getOperand(2).isImm() &&
+        mi.getOperand(0).getReg() == AArch64::SP &&
+        mi.getOperand(1).getReg() == AArch64::SP ) {
+      this->frameSize = mi.getOperand(2).getImm();
+      MF->getFrameInfo().setStackSize(mi.getOperand(2).getImm());
+      dbgs() << "frame size of function: " << this->MF->getName().data() << " is " << this->frameSize << "\n";
+      //printf("frame size of function: %s is %ld\n", this->MF->getName().data(), this->frameSize);
+    } 
+    // add x29, sp, 0x40
+    if (mi.getOpcode() == AArch64::ADDXri && mi.getOperand(0).isReg() &&
+        mi.getOperand(1).isReg() && mi.getOperand(2).isImm() &&
+        mi.getOperand(0).getReg() == AArch64::FP &&
+        mi.getOperand(1).getReg() == AArch64::SP ) {
+      this->fpHeight = mi.getOperand(2).getImm();
+    }     
+  }  
+}
+/// loop register to find if register used as parameters
+int AArch64FunctionPrototype::getParaOfRegs(
+    const MachineBasicBlock *Mbb, unsigned regStart, unsigned regEnd,
+    DenseMap<unsigned, bool> &ArgObtain,
+    DenseMap<int, Type *> &tarr, int maxidx, Type *paraType) {
+  int midx = -1;
+  for (unsigned IReg = regStart; IReg <= regEnd; IReg++) {
+    if (!ArgObtain[IReg] && Mbb->isLiveIn(IReg)) {
+      for (MachineBasicBlock::const_iterator ii = Mbb->begin(),
+                                            ie = Mbb->end();
+          ii != ie; ++ii) {
+        const MachineInstr &LMI = *ii;
+        auto RUses = LMI.uses();
+        auto ResIter =
+            std::find_if(RUses.begin(), RUses.end(),
+                        [IReg](const MachineOperand &OP) -> bool {
+                          return OP.isReg() && (OP.getReg() == IReg);
+                        });
+        if (ResIter != RUses.end()) {
+          midx = IReg - regStart;
+          tarr[midx] = paraType;
+          break;
+        }
+      }
+      ArgObtain[IReg] = true;
+    }
+  }
+  if (midx > maxidx) { return midx; }
+  else return maxidx;
+}
 /// Check the first reference of the reg is DEF.
 void AArch64FunctionPrototype::genParameterTypes(std::vector<Type *> &paramTypes) {
+  this->calculateFrameSize();
   assert(!MF->empty() && "The function body is empty!!!");
   MF->getRegInfo().freezeReservedRegs(*MF);
   LivePhysRegs liveInPhysRegs;
-  for (MachineBasicBlock &EMBB : *MF)
+  for (MachineBasicBlock &EMBB : *MF) {
     computeAndAddLiveIns(liveInPhysRegs, EMBB);
+    printf("live-in reg in block, %s\n", EMBB.getName().data());
+    for (auto liveInReg: EMBB.liveins()) {
+       printf("%d ", liveInReg.PhysReg);
+    }
+    printf("\n");
+  }
   // Walk the CFG DFS to discover first register usage
   df_iterator_default_set<const MachineBasicBlock *, 16> Visited;
   DenseMap<unsigned, bool> ArgObtain;
-  ArgObtain[AArch64::X0] = false;
-  ArgObtain[AArch64::X1] = false;
-  ArgObtain[AArch64::X2] = false;
-  ArgObtain[AArch64::X3] = false;
-  ArgObtain[AArch64::X4] = false;
-  ArgObtain[AArch64::X5] = false;
-  ArgObtain[AArch64::X6] = false;
-  ArgObtain[AArch64::X7] = false;  
+  for (unsigned iR=AArch64::X0; iR <= AArch64::X7; ++iR ) ArgObtain[iR] = false;
+  for (unsigned iR=AArch64::W0; iR <= AArch64::W7; ++iR ) ArgObtain[iR] = false;
+  for (unsigned iR=AArch64::B0; iR <= AArch64::B7; ++iR ) ArgObtain[iR] = false;
+  for (unsigned iR=AArch64::H0; iR <= AArch64::H7; ++iR ) ArgObtain[iR] = false;
+  for (unsigned iR=AArch64::D0; iR <= AArch64::D7; ++iR ) ArgObtain[iR] = false;
+  for (unsigned iR=AArch64::S0; iR <= AArch64::S7; ++iR ) ArgObtain[iR] = false;
+  for (unsigned iR=AArch64::Q0; iR <= AArch64::Q7; ++iR ) ArgObtain[iR] = false;
   const MachineBasicBlock &fmbb = MF->front();
   DenseMap<int, Type *> tarr;
   int maxidx = -1; // When the maxidx is -1, means there is no argument.
   // Track register liveness on CFG.
+  printf("start obtaining arguments...\n");
   for (const MachineBasicBlock *Mbb : depth_first_ext(&fmbb, Visited)) {
-    for (unsigned IReg = AArch64::X0; IReg < AArch64::X7; IReg++) {
-      if (!ArgObtain[IReg] && Mbb->isLiveIn(IReg)) {
-        for (MachineBasicBlock::const_iterator ii = Mbb->begin(),
-                                               ie = Mbb->end();
-             ii != ie; ++ii) {
-          const MachineInstr &LMI = *ii;
-          auto RUses = LMI.uses();
-          auto ResIter =
-              std::find_if(RUses.begin(), RUses.end(),
-                           [IReg](const MachineOperand &OP) -> bool {
-                             return OP.isReg() && (OP.getReg() == IReg);
-                           });
-          if (ResIter != RUses.end()) {
-            maxidx = IReg - AArch64::X0;
-            tarr[maxidx] = getDefaultType();
-            break;
-          }
-        }
-        ArgObtain[IReg] = true;
-      }
-    }
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::X0, (unsigned int)AArch64::X7, ArgObtain, tarr, maxidx, Type::getIntNTy(*CTX, 64));
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::W0, (unsigned int)AArch64::W7, ArgObtain, tarr, maxidx, Type::getIntNTy(*CTX, 32));
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::B0, (unsigned int)AArch64::B7, ArgObtain, tarr, maxidx, Type::getIntNTy(*CTX, 8));
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::H0, (unsigned int)AArch64::H7, ArgObtain, tarr, maxidx, Type::getIntNTy(*CTX, 16));
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::D0, (unsigned int)AArch64::D7, ArgObtain, tarr, maxidx, Type::getDoubleTy(*CTX));
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::S0, (unsigned int)AArch64::S7, ArgObtain, tarr, maxidx, Type::getFloatTy(*CTX));
+    maxidx = this->getParaOfRegs(Mbb, (unsigned int)AArch64::Q0, (unsigned int)AArch64::Q7, ArgObtain, tarr, maxidx, Type::getFP128Ty(*CTX));
   }
   // The rest of function arguments are from stack.
   for (MachineFunction::const_iterator mbbi = MF->begin(), mbbe = MF->end();
@@ -101,43 +148,48 @@ void AArch64FunctionPrototype::genParameterTypes(std::vector<Type *> &paramTypes
     for (MachineBasicBlock::const_iterator mii = mbb.begin(), mie = mbb.end();
          mii != mie; ++mii) {
       const MachineInstr &mi = *mii;
-      // Match pattern like ldr r1, [fp, #8].
-      if (mi.getOpcode() == AArch64::LDRXui && mi.getNumOperands() > 2) {
+      // Match pattern like ldr w9, [sp, 0x50]. or ldr w9, [fp, 0x10]
+      auto opc = mi.getOpcode();
+      if ((opc == AArch64::LDRXui || opc == AArch64::LDRWui ||
+           opc == AArch64::LDRHui || opc == AArch64::LDRBui ) 
+          && mi.getNumOperands() > 2) {
         const MachineOperand &mo = mi.getOperand(1);
         const MachineOperand &mc = mi.getOperand(2);
-        if (mo.isReg() && mo.getReg() == AArch64::FP && mc.isImm()) {
+        unsigned int regWidth = 8;
+        if (opc == AArch64::LDRWui) regWidth = 4;
+        if (opc == AArch64::LDRHui) regWidth = 2;
+        if (opc == AArch64::LDRBui) regWidth = 1;
+        if (mo.isReg() && 
+            (mo.getReg() == AArch64::SP || mo.getReg() == AArch64::FP) && 
+            mc.isImm()) {
           // TODO: Need to check the imm is larger than 0 and it is align
           // by 4(32 bit).
           int imm = mc.getImm();
-          if (imm >= 0) {
-            // The start index of arguments on stack. If the library was
-            // compiled by clang, it starts from 2. If the library was compiled
-            // by GNU cross compiler, it starts from 1.
-            // FIXME: For now, we only treat that the library was complied by
-            // clang. We will enable the 'if condition' after we are able to
-            // identify the library was compiled by which compiler.
-            int idxoff = 2;
-            if (true /* clang */)
-              idxoff = 2;
-            else /* gnu */
-              idxoff = 1;
-
-            int idx = imm / 4 - idxoff + 4; // Plus 4 is to guarantee the first
-                                            // stack argument index is after all
-                                            // of register arguments' indices.
+          unsigned int stride = regWidth; 
+          if ((mo.getReg() == AArch64::SP && (imm*stride) >= this->frameSize) || 
+              (mo.getReg() == AArch64::FP && (imm*stride + this->fpHeight >= this->frameSize)) ) {
+            int idx = -1 ;
+            if (mo.getReg() == AArch64::SP) {
+              idx = (imm * stride - this->frameSize)/8 + 8; // eq. ldr w8, [sp+32], and frame size = 32, ==> idx = 0 + 8 = 8
+            } else {
+              idx = (imm * stride + this->fpHeight - this->frameSize)/8 + 8;
+            }
             if (maxidx < idx)
               maxidx = idx;
-            tarr[idx] = getDefaultType();
+            tarr[idx] = Type::getIntNTy(*CTX, regWidth * 8);
+            // tarr[idx] = getDefaultType();
           }
         }
       }
     }
   }
+  dbgs() << "total # of parameters == " << (maxidx+1) << "\n";
   for (int i = 0; i <= maxidx; ++i) {
     if (tarr[i] == nullptr)
       paramTypes.push_back(getDefaultType());
     else
       paramTypes.push_back(tarr[i]);
+    // printf("%d : %d\n", i, paramTypes.back()->getTypeID());
   }
 }
 
@@ -174,11 +226,30 @@ Type *AArch64FunctionPrototype::genReturnType() {
   for (const MachineBasicBlock &mbb : *MF) {
     if (mbb.succ_empty()) {
       if (isDefinedRegiser(AArch64::X0, mbb)) {
-        // TODO: Need to identify data type, int, long, float or double.
-        retTy = getDefaultType();
+        retTy = Type::getIntNTy(*CTX, 64);
         break;
       }
-    }
+      if (isDefinedRegiser(AArch64::W0, mbb)) {
+        retTy = Type::getIntNTy(*CTX, 32);
+        break;
+      }      
+      if (isDefinedRegiser(AArch64::H0, mbb)) {
+        retTy = Type::getIntNTy(*CTX, 16);
+        break;
+      }      
+      if (isDefinedRegiser(AArch64::B0, mbb)) {
+        retTy = Type::getIntNTy(*CTX, 8);
+        break;
+      }      
+      if (isDefinedRegiser(AArch64::S0, mbb)) {
+        retTy = Type::getFloatTy(*CTX);
+        break;
+      }      
+      if (isDefinedRegiser(AArch64::D0, mbb)) {
+        retTy = Type::getDoubleTy(*CTX);
+        break;
+      }      
+    }        
   }
 
   return retTy;
@@ -191,7 +262,6 @@ Function *AArch64FunctionPrototype::discover(MachineFunction &mf) {
   MF = &mf;
   Function &fn = const_cast<Function &>(mf.getFunction());
   CTX = &fn.getContext();
-
   std::vector<Type *> paramTys;
   genParameterTypes(paramTys);
   Type *retTy = genReturnType();

@@ -35,6 +35,10 @@ bool AArch64ModuleRaiser::collectDynamicRelocations() {
   std::vector<SectionRef> DynRelSec = Obj->dynamic_relocation_sections();
   for (const SectionRef &Section : DynRelSec) {
     for (const RelocationRef &Reloc : Section.relocations()) {
+      SmallVector<char, 128> TypeName;
+      Reloc.getTypeName(TypeName);
+      outs() << "relocation section type: " << TypeName << "\n";
+      printf("dynamic relocationref offset == %X\n", Reloc.getOffset()); 
       DynRelocs.push_back(Reloc);
     }
   }

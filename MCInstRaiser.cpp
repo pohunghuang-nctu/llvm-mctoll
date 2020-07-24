@@ -31,7 +31,8 @@ void MCInstRaiser::buildCFG(MachineFunction &MF, const MCInstrAnalysis *MIA,
   //     b) add raised MachineInstr to current MBB.
   auto targetIndicesEnd = targetIndices.end();
   uint64_t curMBBEntryInstIndex;
-
+  // paul huang 20200426 start from here. 
+  outs() << "total " << mcInstMap.size() << " instructions or data. \n";
   for (auto mcInstorDataIter = mcInstMap.begin();
        mcInstorDataIter != mcInstMap.end(); mcInstorDataIter++) {
     uint64_t mcInstIndex = mcInstorDataIter->first;
@@ -49,8 +50,8 @@ void MCInstRaiser::buildCFG(MachineFunction &MF, const MCInstrAnalysis *MIA,
       // - except when creating the first MBB.
       if (MF.size()) {
         // Find the target MCInst indices of the previous MCInst
-        uint64_t prevMCInstIndex = std::prev(mcInstorDataIter)->first;
-        MCInstOrData prevTextSecBytes = std::prev(mcInstorDataIter)->second;
+        uint64_t prevMCInstIndex = std::prev(mcInstorDataIter)->first; // first is key (index)
+        MCInstOrData prevTextSecBytes = std::prev(mcInstorDataIter)->second; // second is instr or data
         std::vector<uint64_t> prevMCInstTargets;
 
         // If handling a mcInst
@@ -109,8 +110,10 @@ void MCInstRaiser::buildCFG(MachineFunction &MF, const MCInstrAnalysis *MIA,
 
       // Add the new MBB to MachineFunction
       if (mcInstorData.isMCInst()) {
+        outs() << "going to create a new BB.\n";
         MF.push_back(MF.CreateMachineBasicBlock());
         curMBBEntryInstIndex = mcInstIndex;
+        outs() << "The entry of BB is " << std::to_string(mcInstIndex).c_str() << ".\n" ;
       }
     }
     if (mcInstorData.isMCInst()) {
@@ -162,7 +165,8 @@ void MCInstRaiser::buildCFG(MachineFunction &MF, const MCInstrAnalysis *MIA,
   // MachineBasicBlocks.
   if (PrintAll) {
     outs() << "Generated CFG\n";
-    LLVM_DEBUG(MF.dump());
+    //LLVM_DEBUG(MF.dump());
+    MF.dump();
   }
 }
 

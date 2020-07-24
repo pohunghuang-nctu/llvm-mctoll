@@ -65,7 +65,8 @@ void MCInstOrData::dump() const {
     outs() << "0x" << format("%04" PRIx16, Data) << "\n";
     break;
   case Tag::INSTRUCTION:
-    LLVM_DEBUG(Inst.dump());
+    //LLVM_DEBUG(Inst.dump());
+    Inst.dump();
     break;
   }
 }

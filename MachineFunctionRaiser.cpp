@@ -99,8 +99,8 @@ bool ModuleRaiser::runMachineFunctionPasses() {
     // 1. Build CFG
     MCInstRaiser *MCIR = MFR->getMCInstRaiser();
     // Populates the MachineFunction with CFG.
+    outs() << "before building CFG. \n";
     MCIR->buildCFG(MFR->getMachineFunction(), MIA, MII);
-
     // 2. Construct function prototype.
     // Knowing the function prototypes prior to raising the instructions
     // facilitates raising of call instructions whose targets are within
@@ -113,7 +113,7 @@ bool ModuleRaiser::runMachineFunctionPasses() {
       assert(FT != nullptr && "Failed to build function prototype");
     }
   }
-
+  //exit(0);
   // Run instruction raiser passes.
   for (auto MFR : mfRaiserVector)
     Success |= MFR->runRaiserPasses();

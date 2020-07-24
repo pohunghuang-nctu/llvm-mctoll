@@ -134,7 +134,7 @@ bool AArch64CreateJumpTable::raiseMaichineJumpTable(MachineFunction &MF) {
       // ldr     r2, [r0, r1, lsl #2]
       // add     pc, r0, r2
       // TODO: in AArch64, branch will not do like this. 
-      if (JmpTblOffsetCalcMI.getOpcode() == AArch64::ADRP &&
+      if (JmpTblOffsetCalcMI.getOpcode() == AArch64::ADXri &&
           JmpTblOffsetCalcMI.getOperand(1).getReg() == AArch64::X0 &&
           JmpTblOffsetCalcMI.getOperand(2).getImm() == 8) {
         // If the fourth instruction in swith block is "add pc, rm, rn",

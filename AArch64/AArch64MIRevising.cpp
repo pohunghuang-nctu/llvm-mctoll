@@ -80,15 +80,15 @@ uint64_t getLoadAlignProgramHeader(const ELFFile<ELFT> *Obj) {
 /// Create function for external function.
 uint64_t AArch64MIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
                                                      uint64_t CallAddr) {
-  const ELF32LEObjectFile *Elf32LEObjFile =
-      dyn_cast<ELF32LEObjectFile>(MR->getObjectFile());
-  assert(Elf32LEObjFile != nullptr &&
-         "Only 32-bit ELF binaries supported at present!");
-  unsigned char ExecType = Elf32LEObjFile->getELFFile()->getHeader()->e_type;
+  const ELF64LEObjectFile *Elf64LEObjFile =
+      dyn_cast<ELF64LEObjectFile>(MR->getObjectFile());
+  assert(Elf64LEObjFile != nullptr &&
+         "Only 64-bit ELF binaries supported at present!");
+  unsigned char ExecType = Elf64LEObjFile->getELFFile()->getHeader()->e_type;
 
   assert((ExecType == ELF::ET_DYN) || (ExecType == ELF::ET_EXEC));
   // Find the section that contains the offset. That must be the PLT section
-  for (section_iterator SecIter : Elf32LEObjFile->sections()) {
+  for (section_iterator SecIter : Elf64LEObjFile->sections()) {
     uint64_t SecStart = SecIter->getAddress();
     uint64_t SecEnd = SecStart + SecIter->getSize();
     if ((SecStart <= PLTEndOff) && (SecEnd >= PLTEndOff)) {
@@ -108,46 +108,59 @@ uint64_t AArch64MIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
       auto SecData = *StrOrErr;
       ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(SecData.data()),
                               SecData.size());
-
-      MCInst InstAddIP;
-      uint64_t InstAddIPSz;
+      // try to dump 4 MCInst in .plt seg 
+      MCInst tmpInst;
+      uint64_t tmpInstSize;
+      for (int i = 0; i < 4; ++i) {
+        bool Success = MR->getMCDisassembler()->getInstruction(
+          tmpInst, tmpInstSize, Bytes.slice(PLTEndOff + 4*i - SecStart),
+          PLTEndOff + 4*i, nulls());
+        if (Success) {
+          tmpInst.dump();
+        } else {
+          dbgs() << "fail to dump MCInst " << i << "\n";
+        }
+      }
+      MCInst InstADRP;
+      uint64_t InstADRPSz;
+      // expect like: adrp x16, 0x11
       bool Success = MR->getMCDisassembler()->getInstruction(
-          InstAddIP, InstAddIPSz, Bytes.slice(PLTEndOff + 4 - SecStart),
-          PLTEndOff + 4, nulls());
+          InstADRP, InstADRPSz, Bytes.slice(PLTEndOff - SecStart),
+          PLTEndOff, nulls());
       assert(Success && "Failed to disassemble instruction in PLT");
 
-      unsigned int OpcAddIP = InstAddIP.getOpcode();
-      MCInstrDesc MCIDAddIP = MR->getMCInstrInfo()->get(OpcAddIP);
+      unsigned int OpcADRP = InstADRP.getOpcode();
 
-      if (OpcAddIP != AArch64::ADDXri && (MCIDAddIP.getNumOperands() != 6)) {
+      if (OpcADRP != AArch64::ADRP) {
         assert(false && "Failed to find function entry from .plt.");
       }
-
-      MCOperand OpdAddIP = InstAddIP.getOperand(2);
-      assert(OpdAddIP.isImm() && "Unexpected immediate for offset.");
-      unsigned Bits = OpdAddIP.getImm() & 0xFF;
-      unsigned Rot = (OpdAddIP.getImm() & 0xF00) >> 7;
-      int64_t P_Align = static_cast<int64_t>(AArch64_AM::ror(Bits, Rot));
-
-      MCInst Inst;
-      uint64_t InstSz;
+      /* operation of ADRP would be:
+      imm = SignExtend(imm:Zeros(12), 64)
+      bits(64) base = PC[]
+      base<11:0> = Zeros(12)
+      X[d] = base + imm
+      */
+      MCOperand OpdADRP = InstADRP.getOperand(1);
+      assert(OpdADRP.isImm() && "Unexpected immediate for offset.");
+      unsigned imm = OpdADRP.getImm() << 12 ;
+      unsigned base = PLTEndOff & 0xFFFFF000;
+      int64_t gotplt_base = static_cast<int64_t>(base + imm); 
+      printf("got.plt address base == %X\n", gotplt_base);
+      MCInst InstLDR;
+      uint64_t InstLDRSz;
       Success = MR->getMCDisassembler()->getInstruction(
-          Inst, InstSz, Bytes.slice(PLTEndOff + 8 - SecStart), PLTEndOff + 8,
+          InstLDR, InstLDRSz, Bytes.slice(PLTEndOff + 4 - SecStart), PLTEndOff + 4,
           nulls());
       assert(Success && "Failed to disassemble instruction in PLT");
-      unsigned int Opcode = Inst.getOpcode();
-      MCInstrDesc MCID = MR->getMCInstrInfo()->get(Opcode);
-
-      if (Opcode != AArch64::LDRXui && (MCID.getNumOperands() != 6)) {
+      unsigned int OpcodeLDR = InstLDR.getOpcode();
+      if (OpcodeLDR != AArch64::LDRXui) {
         assert(false && "Failed to find function entry from .plt.");
       }
+      int64_t gotplt_offset = static_cast<int64_t> (InstLDR.getOperand(2).getImm() * 8);
+      printf("got.plt address offset == %X\n", gotplt_offset);
 
-      MCOperand Operand = Inst.getOperand(3);
-      assert(Operand.isImm() && "Unexpected immediate for offset.");
-
-      uint64_t Index = Operand.getImm();
-
-      uint64_t GotPltRelocOffset = PLTEndOff + Index + P_Align + 8;
+      //uint64_t GotPltRelocOffset = PLTEndOff + Index + P_Align + 8;
+      uint64_t GotPltRelocOffset = gotplt_base + gotplt_offset;
       const RelocationRef *GotPltReloc =
           MR->getDynRelocAtOffset(GotPltRelocOffset);
       assert(GotPltReloc != nullptr &&
@@ -156,16 +169,17 @@ uint64_t AArch64MIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
       assert((GotPltReloc->getType() == ELF::R_AARCH64_JUMP_SLOT) &&
              "Unexpected relocation type for PLT jmp instruction");
       symbol_iterator CalledFuncSym = GotPltReloc->getSymbol();
-      assert(CalledFuncSym != Elf32LEObjFile->symbol_end() &&
+      assert(CalledFuncSym != Elf64LEObjFile->symbol_end() &&
              "Failed to find relocation symbol for PLT entry");
       Expected<StringRef> CalledFuncSymName = CalledFuncSym->getName();
       assert(CalledFuncSymName &&
              "Failed to find symbol associated with dynamic "
              "relocation of PLT jmp target.");
-      Expected<uint64_t> CalledFuncSymAddr = CalledFuncSym->getAddress();
+      dbgs() << "Called function name: " << CalledFuncSymName.get().data() << "\n";       
+      Expected<uint64_t> CalledFuncSymAddr = CalledFuncSym->getAddress();      
       assert(CalledFuncSymAddr &&
              "Failed to get called function address of PLT entry");
-
+      printf("Called Function Symbol Address: %X\n", CalledFuncSymAddr.get());
       if (CalledFuncSymAddr.get() == 0) {
         // Set CallTargetIndex for plt offset to map undefined function symbol
         // for emit CallInst use.
@@ -174,6 +188,7 @@ uint64_t AArch64MIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
 
         MR->setSyscallMapping(PLTEndOff, CalledFunc);
         MR->fillInstAddrFuncMap(CallAddr, CalledFunc);
+        printf("caller address: %X, called function: %s\n", CallAddr, CalledFuncSymName.get().data());
       }
       return CalledFuncSymAddr.get();
     }
@@ -184,12 +199,12 @@ uint64_t AArch64MIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
 /// Relocate call branch instructions in object files.
 void AArch64MIRevising::relocateBranch(MachineInstr &MInst) {
   int64_t relCallTargetOffset = MInst.getOperand(0).getImm();
-  const ELF32LEObjectFile *Elf32LEObjFile =
-      dyn_cast<ELF32LEObjectFile>(MR->getObjectFile());
-  assert(Elf32LEObjFile != nullptr &&
-         "Only 32-bit ELF binaries supported at present.");
+  const ELF64LEObjectFile *Elf64LEObjFile =
+      dyn_cast<ELF64LEObjectFile>(MR->getObjectFile());
+  assert(Elf64LEObjFile != nullptr &&
+         "Only 64-bit ELF binaries supported at present.");
 
-  auto EType = Elf32LEObjFile->getELFFile()->getHeader()->e_type;
+  auto EType = Elf64LEObjFile->getELFFile()->getHeader()->e_type;
   if ((EType == ELF::ET_DYN) || (EType == ELF::ET_EXEC)) {
     int64_t textSectionAddress = MR->getTextSectionAddress();
     assert(textSectionAddress >= 0 && "Failed to find text section address");
@@ -197,28 +212,40 @@ void AArch64MIRevising::relocateBranch(MachineInstr &MInst) {
     // Get MCInst offset - the offset of machine instruction in the binary
     // and instruction size
     int64_t MCInstOffset = getMCInstIndex(MInst);
+    //printf("the MCInstOffset == %X\n", MCInstOffset);
     int64_t CallAddr = MCInstOffset + textSectionAddress;
-    int64_t CallTargetIndex = CallAddr + relCallTargetOffset + 8;
+    // printf("the textSectionAddress == %X\n", textSectionAddress);
+    dbgs() << "the CallAddr == " << CallAddr << "\n";
+    int64_t CallTargetIndex = CallAddr + (relCallTargetOffset << 2);
+    dbgs() << "the CallTargetIndex == " << CallTargetIndex << "\n";
     assert(MCIR != nullptr && "MCInstRaiser was not initialized");
     int64_t CallTargetOffset = CallTargetIndex - textSectionAddress;
+    dbgs() << "the CallTargetOffset == " << CallTargetOffset << "\n";
+    // if we could find the function by address, then nothing need to be done. 
     if (CallTargetOffset < 0 || !MCIR->isMCInstInRange(CallTargetOffset)) {
       Function *CalledFunc = nullptr;
       uint64_t MCInstSize = MCIR->getMCInstSize(MCInstOffset);
       uint64_t Index = 1;
       CalledFunc = MR->getRaisedFunctionAt(CallTargetIndex);
       if (CalledFunc == nullptr) {
+        dbgs() << "function address not found in our raised function.\n";
         CalledFunc =
             MR->getCalledFunctionUsingTextReloc(MCInstOffset, MCInstSize);
       }
       // Look up the PLT to find called function.
-      if (CalledFunc == nullptr)
-        Index = getCalledFunctionAtPLTOffset(CallTargetIndex, CallAddr);
-
       if (CalledFunc == nullptr) {
+          dbgs() << "function address also not found in relocate address.\n";
+          Index = getCalledFunctionAtPLTOffset(CallTargetIndex, CallAddr);
+      }
+      if (CalledFunc == nullptr) {
+        dbgs() << "function address also not found in plt.\n";
         if (Index == 0)
           MInst.getOperand(0).setImm(CallTargetIndex);
-        else if (Index != 1)
+        else if (Index != 1) {
+          // if call target found in .plt (external function), then set the symbol address as operand.
           MInst.getOperand(0).setImm(Index);
+          dbgs() << "Set symbol address as operand of B.\n";
+        }  
         else
           assert(false && "Failed to get the call function!");
       } else
@@ -235,10 +262,10 @@ void AArch64MIRevising::relocateBranch(MachineInstr &MInst) {
 const Value *AArch64MIRevising::getGlobalValueByOffset(int64_t MCInstOffset,
                                                    uint64_t PCOffset) {
   const Value *GlobVal = nullptr;
-  const ELF32LEObjectFile *ObjFile =
-      dyn_cast<ELF32LEObjectFile>(MR->getObjectFile());
+  const ELF64LEObjectFile *ObjFile =
+      dyn_cast<ELF64LEObjectFile>(MR->getObjectFile());
   assert(ObjFile != nullptr &&
-         "Only 32-bit ELF binaries supported at present.");
+         "Only 64-bit ELF binaries supported at present.");
 
   // Get the text section address
   int64_t TextSecAddr = MR->getTextSectionAddress();
@@ -513,32 +540,42 @@ void AArch64MIRevising::decodeModImmOperand(MachineInstr &MInst) {
 /// Remove some useless operations of instructions. Some instructions like
 /// NOP (mov r0, r0).
 bool AArch64MIRevising::removeNeedlessInst(MachineInstr *MInst) {
-  if (MInst->getOpcode() == AArch64::ADDXri && MInst->getNumOperands() >= 2 &&
+  // Not sure if AArch64 has NOP, To-be-done in future. 
+  /*
+  if ((MInst->getOpcode() == AArch64::ORRXri || MInst->getOpcode() == AArch64::ORRWri) && 
+      MInst->getNumOperands() >= 2 &&
       MInst->getOperand(0).isReg() && MInst->getOperand(1).isReg() &&
-      MInst->getOperand(0).getReg() == MInst->getOperand(1).getReg()) {
+      MInst->getOperand(0).getReg() == MInst->getOperand(1).getReg() &&
+      MInst->getOperand(2).isImm() && Minst->getOperand(2).getImm() == ) {
     return true;
   }
-
+  */
   return false;
 }
 
 /// The entry function of this class.
 bool AArch64MIRevising::reviseMI(MachineInstr &MInst) {
   decodeModImmOperand(MInst);
-  // Relocate BL target in same section.
-  if (MInst.getOpcode() == AArch64::BL || // MInst.getOpcode() == AArch64::BL_pred ||
-      MInst.getOpcode() == AArch64::Bcc) {
+  // Relocate BL (function call) target in same section other than .text .
+  if (MInst.getOpcode() == AArch64::BL) // || MInst.getOpcode() == AArch64::BL_pred ||
+     // AArch64::BL ==> function call
+     // MInst.getOpcode() == AArch64::B) {
+     // AArch64::B ==> not function call
+  { 
     MachineOperand &mo0 = MInst.getOperand(0);
-    if (mo0.isImm())
+    if (mo0.isImm()) {
+      printf("goint to relocate branch.\n");
       relocateBranch(MInst);
+    }
   }
-
+  /*  In AArch64, not allow load or store to PC directly, so omit this case. 
   if (MInst.getOpcode() == AArch64::LDRXui || MInst.getOpcode() == AArch64::STRXui) {
     if (MInst.getNumOperands() >= 2 && MInst.getOperand(1).isReg() &&
-        MInst.getOperand(1).getReg() == AArch64::XZR) {
+        MInst.getOperand(1).getReg() == AArch64::PC) {
       addressPCRelativeData(MInst);
     }
   }
+  */
 
   return true;
 }
@@ -549,6 +586,7 @@ bool AArch64MIRevising::revise() {
     dbgs() << "AArch64MIRevising start.\n";
 
   vector<MachineInstr *> RMVec;
+  printf("AArch64MIRevising::revise for function: %s\n", MF->getName().data());
   for (MachineFunction::iterator mbbi = MF->begin(), mbbe = MF->end();
        mbbi != mbbe; ++mbbi) {
     for (MachineBasicBlock::iterator mii = mbbi->begin(), mie = mbbi->end();
@@ -570,7 +608,6 @@ bool AArch64MIRevising::revise() {
     LLVM_DEBUG(getCRF()->dump());
     dbgs() << "AArch64MIRevising end.\n";
   }
-
   return rtn;
 }
 

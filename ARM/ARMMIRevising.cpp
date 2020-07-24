@@ -77,15 +77,15 @@ uint64_t getLoadAlignProgramHeader(const ELFFile<ELFT> *Obj) {
 /// Create function for external function.
 uint64_t ARMMIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
                                                      uint64_t CallAddr) {
-  const ELF32LEObjectFile *Elf32LEObjFile =
+  const ELF32LEObjectFile *Elf64LEObjFile =
       dyn_cast<ELF32LEObjectFile>(MR->getObjectFile());
-  assert(Elf32LEObjFile != nullptr &&
-         "Only 32-bit ELF binaries supported at present!");
-  unsigned char ExecType = Elf32LEObjFile->getELFFile()->getHeader()->e_type;
+  assert(Elf64LEObjFile != nullptr &&
+         "Only 64-bit ELF binaries supported at present!");
+  unsigned char ExecType = Elf64LEObjFile->getELFFile()->getHeader()->e_type;
 
   assert((ExecType == ELF::ET_DYN) || (ExecType == ELF::ET_EXEC));
   // Find the section that contains the offset. That must be the PLT section
-  for (section_iterator SecIter : Elf32LEObjFile->sections()) {
+  for (section_iterator SecIter : Elf64LEObjFile->sections()) {
     uint64_t SecStart = SecIter->getAddress();
     uint64_t SecEnd = SecStart + SecIter->getSize();
     if ((SecStart <= PLTEndOff) && (SecEnd >= PLTEndOff)) {
@@ -153,7 +153,7 @@ uint64_t ARMMIRevising::getCalledFunctionAtPLTOffset(uint64_t PLTEndOff,
       assert((GotPltReloc->getType() == ELF::R_ARM_JUMP_SLOT) &&
              "Unexpected relocation type for PLT jmp instruction");
       symbol_iterator CalledFuncSym = GotPltReloc->getSymbol();
-      assert(CalledFuncSym != Elf32LEObjFile->symbol_end() &&
+      assert(CalledFuncSym != Elf64LEObjFile->symbol_end() &&
              "Failed to find relocation symbol for PLT entry");
       Expected<StringRef> CalledFuncSymName = CalledFuncSym->getName();
       assert(CalledFuncSymName &&
@@ -235,7 +235,7 @@ const Value *ARMMIRevising::getGlobalValueByOffset(int64_t MCInstOffset,
   const ELF32LEObjectFile *ObjFile =
       dyn_cast<ELF32LEObjectFile>(MR->getObjectFile());
   assert(ObjFile != nullptr &&
-         "Only 32-bit ELF binaries supported at present.");
+         "Only 64-bit ELF binaries supported at present.");
 
   // Get the text section address
   int64_t TextSecAddr = MR->getTextSectionAddress();

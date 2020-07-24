@@ -41,11 +41,17 @@ private:
   bool isDefinedRegiser(unsigned reg, const MachineBasicBlock &mbb);
   /// Get all arguments types of current MachineFunction.
   void genParameterTypes(std::vector<Type *> &paramTypes);
+  int getParaOfRegs(const MachineBasicBlock *Mbb, unsigned regStart, unsigned regEnd, 
+    DenseMap<unsigned, bool> &ArgObtain, DenseMap<int, Type *> &tarr, int maxidx,
+    Type *paraType);
   /// Get return type of current MachineFunction.
   Type *genReturnType();
+  void calculateFrameSize();
 
   bool PrintPass;
   MachineFunction *MF;
+  int64_t frameSize = -1;
+  int64_t fpHeight = -1;
   LLVMContext *CTX;
 };
 

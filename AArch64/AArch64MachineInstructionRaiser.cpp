@@ -30,6 +30,7 @@ AArch64MachineInstructionRaiser::AArch64MachineInstructionRaiser(
       machRegInfo(MF.getRegInfo()) {}
 
 bool AArch64MachineInstructionRaiser::raiseMachineFunction() {
+  // Paul Huang 20200427 going to dig down. 
   const AArch64ModuleRaiser *amr = dyn_cast<AArch64ModuleRaiser>(MR);
   assert(amr != nullptr && "The AArch64 module raiser is not initialized!");
   AArch64ModuleRaiser &rmr = const_cast<AArch64ModuleRaiser &>(*amr);
@@ -38,6 +39,7 @@ bool AArch64MachineInstructionRaiser::raiseMachineFunction() {
   mir.init(&MF, raisedFunction);
   mir.setMCInstRaiser(mcInstRaiser);
   mir.revise();
+  
 
   AArch64EliminatePrologEpilog epe(rmr);
   epe.init(&MF, raisedFunction);
@@ -47,6 +49,7 @@ bool AArch64MachineInstructionRaiser::raiseMachineFunction() {
   cjt.init(&MF, raisedFunction);
   cjt.setMCInstRaiser(mcInstRaiser);
   cjt.create();
+  exit(0);
   cjt.getJTlist(jtList);
 
   AArch64ArgumentRaiser ar(rmr);

@@ -909,10 +909,10 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
   moduleRaiser->setModuleRaiserInfo(&module, Target.get(),
                                     &machineModuleInfo->getMMI(), MIA.get(),
                                     MII.get(), Obj, DisAsm.get());
-
+  outs() << "going to start collect dynamic relocations. \n"; 
   // Collect dynamic relocations.
   moduleRaiser->collectDynamicRelocations();
-
+  outs() << "finish collect dynamic relocations. \n";
   // Create a mapping, RelocSecs = SectionRelocMap[S], where sections
   // in RelocSecs contain the relocations for section S.
   std::error_code EC;
@@ -941,6 +941,7 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
       report_error(Name.takeError(), Obj->getFileName());
     if (Name->empty())
       continue;
+    // outs() << "symbol name: " << Name->data() << "\n"; 
 
     Expected<section_iterator> SectionOrErr = Symbol.getSection();
     if (!SectionOrErr)
@@ -957,13 +958,14 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
   }
   if (AllSymbols.empty() && Obj->isELF())
     addDynamicElfSymbols(Obj, AllSymbols);
-
+  outs() << "finish symbol mapping...\n";
   // Create a mapping from virtual address to section.
   std::vector<std::pair<uint64_t, SectionRef>> SectionAddresses;
   for (SectionRef Sec : Obj->sections())
     SectionAddresses.emplace_back(Sec.getAddress(), Sec);
   array_pod_sort(SectionAddresses.begin(), SectionAddresses.end());
 
+  outs() << "finish section virtual address mapping. \n";
   // Linked executables (.exe and .dll files) typically don't include a real
   // symbol table but they might contain an export table.
   if (const auto *COFFObj = dyn_cast<COFFObjectFile>(Obj)) {
@@ -1002,8 +1004,10 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
       continue;
 
     StringRef SectionName;
-    if (auto NameOrErr = Section.getName())
+    if (auto NameOrErr = Section.getName()) {
       SectionName = *NameOrErr;
+      outs() << "processing section: " << SectionName <<"\n";
+    }
     else
       consumeError(NameOrErr.takeError());
 
@@ -1020,14 +1024,18 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
       for (const auto &Symb : Symbols) {
         uint64_t Address = Symb.Addr;
         StringRef Name = Symb.Name;
-        if (Name.startswith("$d"))
+        if (Name.startswith("$d")){
           DataMappingSymsAddr.push_back(Address - SectionAddr);
-        if (Name.startswith("$x"))
+        }
+        if (Name.startswith("$x")) {
           TextMappingSymsAddr.push_back(Address - SectionAddr);
-        if (Name.startswith("$a"))
+        }
+        if (Name.startswith("$a")) {
           TextMappingSymsAddr.push_back(Address - SectionAddr);
-        if (Name.startswith("$t"))
+        }  
+        if (Name.startswith("$t")) {
           TextMappingSymsAddr.push_back(Address - SectionAddr);
+        }
       }
     }
 
@@ -1059,6 +1067,7 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
     std::sort(Rels.begin(), Rels.end(), RelocAddressLess);
 
     StringRef SegmentName = "";
+    // for Mach-O, Machintosh
     if (const MachOObjectFile *MachO = dyn_cast<const MachOObjectFile>(Obj)) {
       DataRefImpl DR = Section.getRawDataRefImpl();
       SegmentName = MachO->getSectionFinalSegmentName(DR);
@@ -1076,7 +1085,7 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
         outs() << "Disassembling section ";
         if (!SegmentName.empty())
           outs() << SegmentName << ",";
-        outs() << name << "\n";
+        outs() << SectionName << "\n";
       }
     }
 
@@ -1084,7 +1093,7 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
     if (Symbols.empty() || Symbols[0].Addr != 0) {
       Symbols.insert(
           Symbols.begin(),
-          SymbolInfoTy(SectionAddr, name,
+          SymbolInfoTy(SectionAddr, SectionName,
                        Section.isText() ? ELF::STT_FUNC : ELF::STT_OBJECT));
     }
 
@@ -1163,7 +1172,7 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
 
       if (isAFunctionSymbol(Obj, Symbols[si])) {
         auto &SymStr = Symbols[si].Name;
-
+        outs()<<"function symbol found, "<<SymStr<<"\n";
         if ((FilterFunctionSet.getNumOccurrences() != 0)) {
           // Check the symbol name whether it should be excluded or not.
           if (!FuncFilter->isFilterSetEmpty(FunctionFilter::FILTER_EXCLUDE)) {
@@ -1184,9 +1193,10 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
 
         // If Symbol is in the ELFCRTSymbol list return this is a symbol of a
         // function we are not interested in disassembling and raising.
-        if (ELFCRTSymbols.find(SymStr) != ELFCRTSymbols.end())
+        if (ELFCRTSymbols.find(SymStr) != ELFCRTSymbols.end()) {
+          outs()<<SymStr<< " , skipped, not interested. \n";
           continue;
-
+        }
         // Note that since LLVM infrastructure was built to be used to build a
         // conventional compiler pipeline, MachineFunction is built well after
         // Function object was created and populated fully. Hence, creation of
@@ -1205,9 +1215,9 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
         if (Obj->isMachO()) {
           FunctionName.consume_front("_");
         }
+        outs() << "going to create function: " << FunctionName.data() << "\n";
         Function *Func = Function::Create(FTy, GlobalValue::ExternalLinkage,
                                           FunctionName, &module);
-
         // New function symbol encountered. Record all targets collected to
         // current MachineFunctionRaiser before we start parsing the new
         // function bytes.
@@ -1259,7 +1269,7 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
 
       // Start new basic block at the symbol.
       branchTargetSet.insert(Start);
-
+      outs() << "create the first basic block of function: start \n";
       for (Index = Start; Index < End; Index += Size) {
         MCInst Inst;
 
@@ -1393,7 +1403,6 @@ static void DisassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
         // will be made to raise this function.
         if (Disassembled) {
           mcInstRaiser->addMCInstOrData(Index, Inst);
-
           // Find branch target and record it. Call targets are not
           // recorded as they are not needed to build per-function CFG.
           if (MIA && MIA->isBranch(Inst)) {
@@ -1794,6 +1803,7 @@ static void DumpInput(StringRef file) {
       DumpObject(o);
     } else if (o->getArch() == Triple::aarch64) {
         // added by Paul 20200316 for aarch64
+      outs() << "ready to get in AArch64. \n";
       DumpObject(o);
     }
     else {

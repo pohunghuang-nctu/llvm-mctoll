@@ -87,14 +87,16 @@ bool AArch64EliminatePrologEpilog::eliminateProlog(MachineFunction &MF) const {
   for (MachineBasicBlock::iterator frontMBBIter = frontMBB.begin();
        frontMBBIter != frontMBB.end(); frontMBBIter++) {
     MachineInstr &curMachInstr = (*frontMBBIter);
-
-    // Push the MOVr instruction
+    //curMachInstr.dump();
+    // move sp, fp  -- ??? not be seen
     if (curMachInstr.getOpcode() == AArch64::ADDXri) {
       if (curMachInstr.getOperand(0).isReg() &&
           curMachInstr.getOperand(0).getReg() == AArch64::SP &&
           curMachInstr.getOperand(1).isReg() &&
-          curMachInstr.getOperand(1).getReg() == FramePtr)
+          curMachInstr.getOperand(1).getReg() == FramePtr) {
         prologInstrs.push_back(&curMachInstr);
+        continue;
+      }
     }
 
     // Push the STORE instruction
@@ -102,32 +104,37 @@ bool AArch64EliminatePrologEpilog::eliminateProlog(MachineFunction &MF) const {
       MachineOperand storeOperand = curMachInstr.getOperand(0);
       if (storeOperand.isReg() && storeOperand.getReg() == FramePtr) {
         prologInstrs.push_back(&curMachInstr);
+        continue;
       }
     }
 
     // Push the ADDri instruction
-    // add Rx, sp, #imm ; This kind of patten ought to be eliminated.
+    // stp, x29, x30, [sp, 0x40]  ; preserved FR & LR
     if (curMachInstr.getOpcode() == AArch64::STPXi &&
         curMachInstr.getOperand(0).getReg() == AArch64::FP &&
-        curMachInstr.getOperand(1).getReg() == AArch64::SP) {
+        curMachInstr.getOperand(1).getReg() == AArch64::LR) {
       prologInstrs.push_back(&curMachInstr);
+      continue;
     }
 
-    // Push the SUBri instruction
+    // Push the add fp, sp, 0x40
     if (curMachInstr.getOpcode() == AArch64::ADDXri &&
         curMachInstr.getOperand(0).getReg() == AArch64::FP&&
         curMachInstr.getOperand(1).getReg() == AArch64::SP) {
       prologInstrs.push_back(&curMachInstr);
+      continue;
     }
 
-    // Push sub r11, r12, #16
+    // Push sub sp, sp, 0x50
     if (curMachInstr.getOpcode() == AArch64::SUBXri &&
         curMachInstr.getOperand(0).getReg() == AArch64::SP &&
         curMachInstr.getOperand(1).getReg() == AArch64::SP) {
       prologInstrs.push_back(&curMachInstr);
+      continue;
     }
+    //prologInstrs.back()->dump();
   }
-
+  
   // Create the stack frame
   const TargetRegisterInfo *TRI = MF.getRegInfo().getTargetRegisterInfo();
   const MCPhysReg *CSRegs = TRI->getCalleeSavedRegs(&MF);
@@ -139,19 +146,22 @@ bool AArch64EliminatePrologEpilog::eliminateProlog(MachineFunction &MF) const {
     // Save register.
     if (checkRegister(Reg, prologInstrs)) {
       CSI.push_back(CalleeSavedInfo(Reg));
+      dbgs() << "called saved register: " << Reg << "\n";
     }
   }
-
+  dbgs() << "total # of saved register: " << CSI.size() << "\n";
   const TargetFrameLowering *TFI = MF.getSubtarget().getFrameLowering();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   if (!TFI->assignCalleeSavedSpillSlots(MF, RegInfo, CSI)) {
     // If target doesn't implement this, use generic code.
+    dbgs() << "assignCalleeSavedSpillSlots not implemented.\n ";
     if (CSI.empty())
       return true; // Early exit if no callee saved registers are modified!
 
     unsigned NumFixedSpillSlots;
     const TargetFrameLowering::SpillSlot *FixedSpillSlots =
         TFI->getCalleeSavedSpillSlots(NumFixedSpillSlots);
+    dbgs() << "# of fixed spilled slots: " << NumFixedSpillSlots << "\n";
 
     // Allocate stack slots for the registers that need to be saved and restored
     unsigned Offset = 0;
@@ -161,10 +171,11 @@ bool AArch64EliminatePrologEpilog::eliminateProlog(MachineFunction &MF) const {
 
       int FrameIdx;
       if (RegInfo->hasReservedSpillSlot(MF, Reg, FrameIdx)) {
+        dbgs() << "Reg: " << Reg << "has reserved spilled slot: " << FrameIdx << "\n";
         CS.setFrameIdx(FrameIdx);
         continue;
       }
-
+      dbgs() << "Reg: " << Reg << " has no reserved spilled slot \n";
       // Check if this physreg must be spilled to a particular stack slot for
       // this target
       const TargetFrameLowering::SpillSlot *FixedSlot = FixedSpillSlots;
@@ -182,13 +193,15 @@ bool AArch64EliminatePrologEpilog::eliminateProlog(MachineFunction &MF) const {
         // TargetRegisterClass and the stack alignment, whichever is smaller.
         Align = std::min(Align, StackAlign);
         FrameIdx = MFI.CreateStackObject(Size, Align, true);
+        printf("stack object created at index: %d, size is %d\n", FrameIdx, Size);
         Offset += Size;
 
         // Set the object offset
-        MFI.setObjectOffset(FrameIdx, MFI.getObjectOffset(FrameIdx) - Offset);
+        MFI.setObjectOffset(FrameIdx, MFI.getObjectOffset(FrameIdx) - Offset); // ?? what for?
       } else {
         // Spill to the stack.
         FrameIdx = MFI.CreateFixedSpillStackObject(Size, FixedSlot->Offset);
+        printf("fixed spilled stack object created at index: %d, size is %d\n", FrameIdx, Size);
       }
 
       // Set the frame index
@@ -199,10 +212,12 @@ bool AArch64EliminatePrologEpilog::eliminateProlog(MachineFunction &MF) const {
 
   // Eliminate the instructions identified in function prologue
   unsigned int delInstSz = prologInstrs.size();
+  dbgs() << "### prolog instructions to be erased:" << delInstSz << "\n";
   for (unsigned int i = 0; i < delInstSz; i++) {
+    prologInstrs[i]->dump();
     frontMBB.erase(prologInstrs[i]);
   }
-
+  dbgs() << "### prolog instructions erased done.\n";
   return true;
 }
 
@@ -241,49 +256,44 @@ bool AArch64EliminatePrologEpilog::eliminateEpilog(MachineFunction &MF) const {
           }
           */
           epilogInstrs.push_back(&curMachInstr);
+          continue;
         }
       }
 
-      // Push the LDR instruction
-      if (curMachInstr.getOpcode() == AArch64::LDPXpost &&
-          curMachInstr.getOperand(1).getReg() == FramePtr) {
+      // Push the LDP instruction, eq ldp fr, lr, [sp + 8]
+      if (curMachInstr.getOpcode() == AArch64::LDPXi &&
+          curMachInstr.getOperand(0).getReg() == FramePtr &&
+          curMachInstr.getOperand(1).getReg() == AArch64::LR &&
+          curMachInstr.getOperand(2).getReg() == AArch64::SP) {
         epilogInstrs.push_back(&curMachInstr);
+        continue;
       }
 
-      // Push the STR instruction
-      if (curMachInstr.getOpcode() == AArch64::STPXpre &&
-          curMachInstr.getOperand(0).getReg() == FramePtr) {
-        epilogInstrs.push_back(&curMachInstr);
-      }
-
-      // Push the ADDri instruction
+      // Push the ADDri instruction, eq add sp, sp, 0x50, revert sp
       if (curMachInstr.getOpcode() == AArch64::ADDXri &&
           curMachInstr.getOperand(0).isReg()) {
-        if (curMachInstr.getOperand(0).getReg() == FramePtr) {
+        if (curMachInstr.getOperand(0).getReg() == AArch64::SP &&
+            curMachInstr.getOperand(1).isReg() &&
+            curMachInstr.getOperand(1).getReg() == AArch64::SP &&
+            curMachInstr.getOperand(2).isImm() &&
+            curMachInstr.getOperand(2).getImm() == (int64_t)(MF.getFrameInfo().getStackSize())) {
           epilogInstrs.push_back(&curMachInstr);
+          continue;
         }
       }
-
-      // Push the SUBri instruction
-      if (curMachInstr.getOpcode() == AArch64::SUBXri &&
-          curMachInstr.getOperand(0).getReg() == FramePtr) {
-        epilogInstrs.push_back(&curMachInstr);
-      }
-
-      if (curMachInstr.getOpcode() == AArch64::ADDXri) {
-        if (curMachInstr.getOperand(1).isReg() &&
-            curMachInstr.getOperand(1).getReg() == AArch64::SP &&
-            curMachInstr.getOperand(0).isReg() &&
-            curMachInstr.getOperand(0).getReg() == FramePtr)
-          epilogInstrs.push_back(&curMachInstr);
-      }
     }
+
 
     // Eliminate the instructions identified in function epilogue
     unsigned int delInstSz = epilogInstrs.size();
-    for (unsigned int i = 0; i < delInstSz; i++) {
-      MBB.erase(epilogInstrs[i]);
-    }
+    if (delInstSz > 0) {
+      dbgs() << "### epilog instructions to be erased:" << delInstSz << "\n";          
+      for (unsigned int i = 0; i < delInstSz; i++) {
+        epilogInstrs[i]->dump();
+        MBB.erase(epilogInstrs[i]);      
+      }
+      dbgs() << "### epilog instructions erased done\n" ;    
+    }  
   }
 
   return true;
@@ -340,7 +350,7 @@ bool AArch64EliminatePrologEpilog::eliminate() {
   if (success) {
     success = eliminateEpilog(*MF);
   }
-
+  exit(0);
   // For debugging.
   if (PrintPass) {
     LLVM_DEBUG(MF->dump());
